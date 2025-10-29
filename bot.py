@@ -4,105 +4,114 @@ import asyncio
 import os
 from telethon import TelegramClient, events
 
-# --- Configuration ---
+# --- Logging Setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Bot Token (hardcoded for Termux) ---
+# --- Environment Variables ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# --- API ID and API Hash ---
-# Get these from https://my.telegram.org/apps
-API_ID = int(os.getenv("API_ID"))  # Replace with your actual API ID (integer)
-API_HASH = os.getenv("API_HASH")  # Replace with your actual API Hash (string)
-
-if not API_ID or not API_HASH:
-    logger.critical("!!! ERROR: API_ID and API_HASH must be set. Get them from https://my.telegram.org/apps !!!")
-    exit()
-
-# --- API Endpoint (no key required) ---
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
 API_URL = "https://ox.taitaninfo.workers.dev/?mobile={number_to_lookup}"
 
-# Create the bot client
-bot = TelegramClient('bot_session', api_id=API_ID, api_hash=API_HASH)
+# --- Initialize Bot ---
+bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# --- Bot Handlers ---
-
+# --- /start Command ---
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
-    """Sends a welcome message when the /start command is issued."""
-    user = await event.get_sender()
-    user_name = user.first_name
-
-    start_message = (
-        f"Hi {user_name}!\n\n"
-        f"Welcome to the Phone Number Bot. Just send me any "
-        f"phone number and I'll try to find information about it.\n\n"
-        f"— This bot was created by Rahul Sharma"
+    """Welcome message"""
+    await event.reply(
+        "👋 <b>Hey there!</b>\n\n"
+        "Welcome to <b>📞 Number Info Bot</b>!\n\n"
+        "Just send me a phone number (max 13 digits), and I’ll find public info about it.\n\n"
+        "Example:\n<code>918123456789</code>\n\n"
+        "— Created by Rahul Sharma 💻",
+        parse_mode='html'
     )
 
-    await event.reply(start_message)
-    raise events.StopPropagation
-
-
+# --- Message Handler ---
 @bot.on(events.NewMessage(pattern='^(?!/)'))
 async def message_handler(event):
-    """Handles any regular text message (that doesn't start with '/')"""
+    """Handle number lookup"""
+    if event.out or event.sender_id == (await bot.get_me()).id:
+        return
+
     phone_number = event.message.text.strip()
     chat_id = event.chat_id
 
-    logger.info(f"Received number: {phone_number} from chat_id: {chat_id}")
+    if not phone_number.isdigit() or len(phone_number) > 13:
+        await event.reply("⚠️ Please send a valid phone number (digits only, up to 13).")
+        return
+
+    logger.info(f"Received number: {phone_number}")
 
     async with bot.action(chat_id, 'typing'):
         try:
-            # --- Call the API ---
-            url = API_URL.format(number_to_lookup=phone_number)
-            response = requests.get(url)
+            response = requests.get(API_URL.format(number_to_lookup=phone_number))
             response.raise_for_status()
-
             data = response.json()
             logger.info(f"API Response: {data}")
 
-            # --- Format the reply ---
             if data.get("error"):
-                await event.reply(f"Error: {data['error']}")
+                await event.reply(f"❌ <b>Error:</b> {data['error']}", parse_mode='html')
                 return
 
-            reply_message = f"<b>Info for {phone_number}:</b>\n"
-            info_found = False
+            emoji_map = {
+                "name": "🧍‍♂️",
+                "carrier": "📡",
+                "country": "🌍",
+                "city": "🏙️",
+                "address": "📍",
+                "line_type": "📞",
+                "status": "✅",
+                "email": "✉️",
+                "gender": "🚻",
+                "dob": "🎂"
+            }
 
+            info_lines = []
             for key, value in data.items():
                 if value and str(value).strip() not in ["", "NA", "N/A"]:
+                    emoji = emoji_map.get(key.lower(), "🔹")
                     formatted_key = key.replace("_", " ").title()
-                    reply_message += f"\n<b>{formatted_key}:</b> {value}"
-                    info_found = True
+                    info_lines.append(f"{emoji} {formatted_key}: {value}")
 
-            if not info_found:
-                await event.reply(f"No details found for {phone_number}.")
-            else:
-                await event.reply(reply_message, parse_mode='html')
+            if not info_lines:
+                await event.reply("😕 No information found for this number.")
+                return
 
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-            await event.reply("The API service seems to be down. Please try again later.")
+            # Box-style formatted reply
+            reply_message = (
+                f"```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 Number Info Lookup\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Number: {phone_number}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{chr(10).join(info_lines)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔍 Data fetched via API\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"```"
+            )
 
-        except requests.exceptions.RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-            await event.reply("I'm having trouble connecting to the API.")
+            await event.reply(reply_message, parse_mode='markdown')
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API Error: {e}")
+            await event.reply("⚠️ The lookup service is currently unavailable. Please try again later.")
         except Exception as e:
-            logger.error(f"An unknown error occurred: {e}")
-            await event.reply("An unexpected error happened. I've logged it.")
+            logger.error(f"Unexpected Error: {e}")
+            await event.reply("❗ An unexpected error occurred. Please try again later.")
 
-
-async def main():
-    """Start the bot."""
-    logger.info("Bot started (Telethon)...")
-    await bot.start(bot_token=BOT_TOKEN)
-    await bot.run_until_disconnected()
-
+# --- Run Bot ---
+def main():
+    logger.info("🤖 Bot is running...")
+    bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
