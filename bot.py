@@ -43,6 +43,7 @@ async def message_handler(event):
     phone_number = event.message.text.strip()
     chat_id = event.chat_id
 
+    # Validate number
     if not phone_number.isdigit() or len(phone_number) > 13:
         await event.reply("⚠️ Please send a valid phone number (digits only, up to 13).")
         return
@@ -51,13 +52,21 @@ async def message_handler(event):
 
     async with bot.action(chat_id, 'typing'):
         try:
-            response = requests.get(API_URL.format(number_to_lookup=phone_number))
+            response = requests.get(API_URL.format(number_to_lookup=phone_number), timeout=10)
             response.raise_for_status()
             data = response.json()
             logger.info(f"API Response: {data}")
 
+            # Handle known API validation errors
+            if isinstance(data, dict) and "detail" in data:
+                detail = data["detail"]
+                if isinstance(detail, list) and "msg" in detail[0]:
+                    msg = detail[0]["msg"]
+                    await event.reply(f"❌ API Error: {msg}")
+                    return
+
             if data.get("error"):
-                await event.reply(f"❌ <b>Error:</b> {data['error']}", parse_mode='html')
+                await event.reply(f"❌ Error: {data['error']}")
                 return
 
             emoji_map = {
@@ -83,6 +92,29 @@ async def message_handler(event):
             if not info_lines:
                 await event.reply("😕 No information found for this number.")
                 return
+
+            reply_message = (
+                f"```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 Number Info Lookup\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Number: {phone_number}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{chr(10).join(info_lines)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔍 Data fetched via API\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"```"
+            )
+
+            await event.reply(reply_message, parse_mode='markdown')
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API Error: {e}")
+            await event.reply("⚠️ The lookup service is currently unavailable. Please try again later.")
+        except Exception as e:
+            logger.error(f"Unexpected Error: {e}")
+            await event.reply("❗ An unexpected error occurred. Please try again later.")
 
             # Box-style formatted reply
             reply_message = (
